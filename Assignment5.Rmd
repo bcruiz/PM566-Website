@@ -1,0 +1,141 @@
+---
+title: "Assignment 5 - Interactive Visualization I and II"
+author: "Brandyn Ruiz"
+date: "11/10/2020"
+output: html_document
+---
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+library(readr)
+library(dplyr)
+library(data.table)
+library(usmap)
+library(ggplot2)
+library(plotly)
+library(maps)
+```
+
+## Covid  Data
+```{r Covid Github, message=FALSE, warning=FALSE}
+download.file("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv", "time_series_covid19_confirmed_US.csv", method="libcurl", timeout = 60)
+
+covidGithub <- data.table::fread("time_series_covid19_confirmed_US.csv")
+
+```
+
+```{r, echo=FALSE}
+# Applying filter to only select covid confirmed cases in California
+covidGithub <- covidGithub%>%
+  filter(Province_State == 'California')%>%
+  rename(county = Admin2)
+
+covidGithub <- covidGithub[ !(covidGithub$county %in% c('Unassigned', 'Out of CA')), ]
+```
+
+```{r Melting Covid Data Set, echo = FALSE, message = FALSE, warning = FALSE}
+# Attempt to melt covid to long format
+covidGithubmelt <- melt(covidGithub, id = 1:11, variable.name = 'Date', variable.factor = FALSE,
+                        value.name = 'Confirmed')
+covidGithubmelt$Date <- as.Date(covidGithubmelt$Date, format = "%m/%d/%y")
+
+# Group by counties and order by date of dataset print out
+covidGithubmelt <- covidGithubmelt%>%
+  group_by(county)%>%
+  arrange(Date, .by_group = TRUE)
+```
+
+```{r New Cases Varible, echo = FALSE, warning=FALSE}
+# format the state variable
+county_list <- unique(covidGithubmelt$county)
+covidGithubmelt$county <- factor(covidGithubmelt$county, levels = county_list)
+
+# Add variables for new_cases:
+for (i in 1:length(county_list)) {
+  cvd_subset = subset(covidGithubmelt, county == county_list[i])
+  cvd_subset = cvd_subset[order(cvd_subset$Date),]
+
+  # add starting level for new cases and deaths
+  cvd_subset$new_cases = covidGithubmelt$Confirmed[1]
+
+  for (j in 2:nrow(cvd_subset)) {
+    cvd_subset$new_cases[j] =  cvd_subset$Confirmed[j] - cvd_subset$Confirmed[j-1] 
+  }
+
+  # include in main dataset
+  covidGithubmelt$new_cases[covidGithubmelt$county == county_list[i]] = cvd_subset$new_cases
+}
+```
+
+## Daily Incidences of Covid
+```{r COVID Visual by County}
+p1<-ggplot(covidGithubmelt, aes(Date, new_cases, color = county))+
+  geom_line()+
+  geom_point(size = .5, alpha = 0.5)+
+  labs(title = 'Incidences of Covid Cases in California by County', y = 'New cases', color = 'County')
+
+ggplotly(p1)
+```
+
+
+## Total Confirmed Covid Cases in California by 11/09
+```{r, warning=FALSE, message=FALSE}
+# Adjusting Merge data set to ggmap setting with only FIPS and Confirmed variables 
+mapdf <- covidGithubmelt%>%
+  filter(Date == '2020-11-09')%>%
+  select(FIPS, new_cases)%>%
+  distinct()%>%
+  rename(fips = FIPS)
+
+cvd_case <- plot_usmap(data = mapdf, values='new_cases', include = 'CA')+
+  scale_fill_continuous(low = 'white', high = 'red', name = 'Confirmed Cases', label = scales::comma)+
+  #scale_fill_distiller(type = "seq", palette = "Spectral", direction = -1, name = "Confirmed Cases")+
+  labs(title = 'Confirmed Cases in California by County',
+       subtitle = 'Source: Johns Hopkins University Center for Systems Science and Engineering (JHU CSSE)',
+       caption = 'Up until 11/09/2020')+
+  theme(plot.title = element_text(hjust = 0.5, vjust = 0.25, size = 18), legend.position = "right",
+        legend.title = element_text(size = 14), legend.text = element_text(size = 12))
+
+ggplotly(cvd_case)
+```
+
+## US Census Data of County Populations
+```{r Population Visualizations, warning=FALSE, message=FALSE}
+# US Census data of California
+CAcensus <- read_csv("data/cc-est2019-alldata-06.csv")
+
+# 2019 Population Estimate of each CA county from US Census
+CApop <- CAcensus%>%
+  filter(YEAR == 12, AGEGRP == 0)
+
+CApop$COUNTY <- paste0(6, CApop$COUNTY)
+```
+
+
+```{r COVID vs Population Density, echo = FALSE}
+# Applying filter for the most current covid data
+covidGithubmelt_today <- covidGithubmelt%>%
+  filter(Date == as.Date(max(Date)))
+
+CApop_today <- CApop%>%
+  rename(FIPS = COUNTY)
+
+# Merging the grand total of covid cases with county population
+cvd_pop<- merge(covidGithubmelt_today, CApop_today, by = 'FIPS')
+
+cvd_pop$per100k = as.numeric(format(round(cvd_pop$Confirmed/(cvd_pop$TOT_POP/100000),1),
+                                      nsmall=1))
+```
+
+## Incidence Rate of Covid Cases by County Populations
+```{r, warning=FALSE, message=FALSE}
+# Adding hoverinfo
+cvd_pop%>% 
+  plot_ly(x = ~TOT_POP, y = ~Confirmed,
+          type = 'scatter', mode = 'markers', color = ~county,
+          size = ~TOT_POP, sizes = c(5, 70), marker = list(sizemode='diameter', opacity=0.5),
+          hoverinfo = 'text',
+          text = ~paste( paste(county, ":", sep=""), paste(" Cases per 100k: ", per100k, sep=""),
+                         paste(' Population: ', TOT_POP, sep=""), sep = "<br>"))%>%
+  layout(title = "Covid Cases by California County vs Population of Each County",
+                  yaxis = list(title = "Cases per 100k"), xaxis = list(title = "Population"))
+```
